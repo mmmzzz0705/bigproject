@@ -1,0 +1,27 @@
+# ---- 核心框架 ----
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9    # UploadFile 解析（工作台上传语料必需，缺了会 400）
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+python-dotenv>=1.0.1
+
+# ---- 数据存储 ----
+SQLAlchemy>=2.0.30
+psycopg2-binary>=2.9.9      # PostgreSQL（本项目默认数据库）
+PyMySQL>=1.1.0              # 可选：MySQL
+cryptography>=42.0.0
+
+# ---- 向量检索 / 数值 ----
+numpy>=1.26.0
+pymilvus>=2.4.0             # Milvus 向量库（生产推荐）
+chromadb>=0.5.0             # 可选：Chroma 向量库，不安装则自动降级为内存向量库
+
+# ---- 大模型 / Embedding（OpenAI 协议，兼容通义千问等）----
+openai>=1.40.0
+requests>=2.31.0            # 通义千问多模态向量原生接口（qwen3-vl-embedding）
+
+# ---- 离线文档预处理 ----
+pypdf>=4.3.0                # PDF 解析
+python-docx>=1.1.0          # Word 解析
+jieba>=0.42.1               # 可选：中文分词，用于关键词召回

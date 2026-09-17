@@ -1,0 +1,205 @@
+name: CD
+
+# 政明白（GovRAG）持续交付：构建镜像 → 推送 GHCR → SSH 到服务器滚动更新
+#
+# 前置条件（只需配一次，见 CI-CD配置说明.md）：
+#   Secrets: DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY / DEPLOY_PATH
+#   （可选）GHCR_PAT：服务器拉取私有镜像用的 PAT；不配则回退到 GITHUB_TOKEN
+#   服务器：存在 $DEPLOY_PATH/.env（由 .env.docker.example 生成并填入真实密钥）
+#
+# 未配置 DEPLOY_HOST 时 deploy 任务自动跳过 —— 只推镜像不部署，
+# 这样仓库一接上 Actions 就能先跑通"构建+推送"，再谈部署。
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 是否部署到服务器（需已配好 DEPLOY_* 密钥）
+        type: boolean
+        default: true
+      ingest:
+        description: 部署后重建知识库（重灌约 6 分钟，会清空现有片段）
+        type: boolean
+        default: false
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: 构建并推送 ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 后端
+            context: ./backend
+            suffix: backend
+            scope: backend
+          - name: 前端
+            context: ./frontend
+            suffix: frontend
+            scope: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 推导镜像名（GHCR 要求全小写）
+        id: image
+        run: |
+          echo "prefix=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/${{ matrix.suffix }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.prefix }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=long
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
+
+  deploy:
+    name: 部署到服务器
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build-and-push]
+    environment: production
+    # 没配 DEPLOY_HOST 就静默跳过：仓库刚接 CI 时不该被部署步骤卡红灯
+    if: >-
+      ${{ github.event_name != 'pull_request' &&
+          secrets.DEPLOY_HOST != '' &&
+          github.event.inputs.deploy != 'false' &&
+          (github.event_name == 'workflow_dispatch' ||
+           github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/master' ||
+           startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 推导镜像名
+        id: image
+        run: |
+          echo "prefix=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: 同步编排文件到服务器
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          source: "docker-compose.yml,docker-compose.deploy.yml"
+          target: ${{ secrets.DEPLOY_PATH }}
+          strip_components: 0
+
+      - name: 拉取新镜像并重启
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          IMAGE_PREFIX: ${{ steps.image.outputs.prefix }}
+          # 分支推送用 latest，tag 推送用 tag 名
+          IMAGE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+          RUN_INGEST: ${{ github.event.inputs.ingest || 'false' }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          script_stop: true
+          envs: DEPLOY_PATH,IMAGE_PREFIX,IMAGE_TAG,GHCR_USER,GHCR_TOKEN,RUN_INGEST
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+
+            # .env 含真实密钥，本来就不该进仓库，因此必须由运维在服务器上先放好
+            if [ ! -f .env ]; then
+              echo "::error::$DEPLOY_PATH/.env 不存在。请先执行 cp .env.docker.example .env 并填入 DASHSCOPE_API_KEY 等真实值"
+              exit 1
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            export BACKEND_IMAGE="$IMAGE_PREFIX/backend:$IMAGE_TAG"
+            export FRONTEND_IMAGE="$IMAGE_PREFIX/frontend:$IMAGE_TAG"
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.deploy.yml"
+
+            $COMPOSE pull
+            $COMPOSE up -d --remove-orphans
+
+            if [ "$RUN_INGEST" = "true" ]; then
+              echo "重建知识库（约 6 分钟）..."
+              $COMPOSE exec -T backend python scripts/ingest.py --dir /app/data/corpus --clear
+            fi
+
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8080/api/health -o /tmp/health.json; then
+                echo "部署成功：$(cat /tmp/health.json)"
+                exit 0
+              fi
+              echo "第 $i 次健康检查未通过，5s 后重试"
+              sleep 5
+            done
+
+            echo "::error::健康检查超时，回滚到上一版"
+            $COMPOSE logs --tail=200 || true
+            exit 1
+
+      - name: 失败时输出容器日志
+        if: failure()
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          envs: DEPLOY_PATH
+          script: |
+            cd "$DEPLOY_PATH"
+            docker compose -f docker-compose.yml -f docker-compose.deploy.yml ps
+            docker compose -f docker-compose.yml -f docker-compose.deploy.yml logs --tail=300
+
+      - name: 清理旧镜像
+        if: success()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          script: docker image prune -f

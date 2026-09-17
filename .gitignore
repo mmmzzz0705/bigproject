@@ -1,0 +1,59 @@
+# ---- 密钥 / 环境变量（必含 API Key，绝不能入库）----
+.env
+.env.*
+# 示例文件必须入库：CI 靠 `cp backend/.env.example backend/.env` 生成运行时配置，
+# 一旦被 .env.* 挡掉，CI 里 env_sync 测试会直接失败。
+!.env.docker.example
+!**/.env.example
+*.pem
+*.key
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- Node ----
+node_modules/
+frontend/dist/
+frontend/.vite/
+# Vite 解析配置时留下的临时文件（每次 dev/build 都可能生成一个新的时间戳文件名）
+frontend/vite.config.js.timestamp-*.mjs
+*.local
+npm-debug.log*
+yarn-error.log*
+
+# ---- 本地数据 / 向量库（体积大且可重建）----
+backend/data/docs/
+backend/data/chroma/
+backend/data/*.db
+backend/data/*.sqlite3
+# 语料要保留（体积小、是知识库素材），但排除大原件
+backend/data/raw/
+*.pdf
+
+# 工作台上传的语料：运行时产物，属于"某人某次上传的内容"而非仓库资产。
+# 注意 backend/data/corpus 是内置基准语料，必须入库，别一起忽略掉。
+backend/data/uploads/
+backend/data/vector_store.json
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ---- 日志 ----
+*.log
+logs/

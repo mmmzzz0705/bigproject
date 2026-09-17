@@ -1,0 +1,15 @@
+[project]
+name = "group6"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "chromadb>=1.5.9",
+    "fastapi>=0.141.1",
+    "myapplication>=0.1.0",
+    "numpy>=2.5.3",
+    "openai>=3.14.1",
+    "pydantic-settings>=2.15.0",
+    "pymilvus>=3.0.1",
+    "pytest>=9.1.1",
+    "sqlalchemy>=2.0.54",
+]

@@ -1,0 +1,206 @@
+# 项目：政明白（GovRAG）—— 政务智能问答与办事引导系统
+# 部署设计：PostgreSQL + Milvus + FastAPI 后端 + Nginx 前端，一键编排
+#
+# 说明：本机开发时可直接复用已有的 PostgreSQL(bigpg:5433) 与 Milvus(19530)，
+#      只启动 backend + frontend 即可：
+#         docker compose up -d --build backend frontend
+#      需要完整独立环境（含数据库）时去掉服务名限制即可。
+#
+# 使用：docker compose up -d --build      停止：docker compose down
+services:
+  postgres:
+    image: postgres:16
+    container_name: gov-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
+      POSTGRES_DB: ${POSTGRES_DB:-gov_qa}
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/sql/schema_postgres.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-gov_qa}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Milvus standalone 需要 etcd + minio，这里通过 milvus 官方 compose 的精简组合提供
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: gov-milvus-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    # 注意：Docker Hub 的 minio/minio 仓库已下架（连 latest 都 pull access denied），
+    # 必须改用 Quay 源。版本号与 Milvus 官方 compose 保持一致。
+    image: quay.io/minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: gov-milvus-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      # 实测该镜像内有 curl、没有 mc，所以必须用 curl 探测，不能照抄 mc ready 写法
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 20s
+
+  milvus:
+    image: milvusdb/milvus:v2.4.13
+    container_name: gov-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      # 注意：宿主侧映射到 19531，不是 19530。
+      # 因为本机往往已经跑着一套 Milvus（占用 19530/2379/9091），直接映射会
+      # "address already in use" 起不来。容器内端口仍是 19530，
+      # backend 通过服务名 milvus:19530 访问，不受影响。
+      - "19531:19530"
+    depends_on:
+      - etcd
+      - minio
+
+  backend:
+    # 构建期 pip 源可由环境覆盖：PIP_INDEX_URL=... docker compose build backend
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    container_name: gov-backend
+    # ⚠️ 密钥类变量必须走 env_file，不能写成 ${VAR} 插值。
+    # docker-compose 的插值优先级是「系统/用户环境变量 > .env 文件」，
+    # 本机 Machine 级环境变量里残留了一个失效的 DASHSCOPE_API_KEY（117 位旧 key），
+    # 会让 ${DASHSCOPE_API_KEY} 取到旧值并静默忽略 .env → 容器内 DashScope 401
+    # → 前端所有提问都答「知识库暂无该业务相关政策」。
+    # env_file 直接读文件注入容器，不经过 shell 插值，.env 始终说了算。
+    env_file:
+      - .env
+    environment:
+      # 复用宿主机已有服务时用 host.docker.internal；完整编排时用服务名
+      DB_TYPE: postgresql
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-123456}
+      DB_NAME: ${POSTGRES_DB:-gov_qa}
+      VECTOR_STORE: milvus
+      VECTOR_DIM: ${VECTOR_DIM:-1024}
+      MILVUS_HOST: ${MILVUS_HOST:-milvus}
+      MILVUS_PORT: 19530
+      MILVUS_COLLECTION: gov_docs
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hash}
+      LLM_PROVIDER: ${LLM_PROVIDER:-extractive}
+      PIPELINE: ${PIPELINE:-native}
+      # OPENAI_API_KEY / DASHSCOPE_API_KEY 不在此声明 —— 由上面的 env_file 提供（见该处注释）
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      DASHSCOPE_EMBED_MODEL: ${DASHSCOPE_EMBED_MODEL:-qwen3.7-text-embedding-flash}
+      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-deepseek-v4.1-flash}
+
+      # ---- 思考模型相关：deepseek-v4.1-flash 原生思考，服务端恒开 ----
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-300}
+      LLM_ENABLE_THINKING: ${LLM_ENABLE_THINKING:-true}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+      LLM_THINKING_BUDGET: ${LLM_THINKING_BUDGET:-0}
+
+      # ---- 相关性闸门：必须随 Embedding 模型重新标定，不能沿用默认值 ----
+      # 标定脚本：scripts/calibrate_gate.py（联合标定）+ scripts/probe_gate.py（口语化泛问探测）
+      #
+      # 闸门以**向量语义相似度为主判据**（见 rag._is_relevant）：
+      #   vec >= VECTOR_MIN_SCORE  或  score >= FUSED_MIN_SCORE  或  kw >= KEYWORD_MIN_SCORE
+      #
+      # 实测分布纯向量排序后（**换模型/换语料必须重测**：calibrate_gate.py + probe_gate.py）
+      #   qwen3.7-text-embedding-flash(1024 维) / 32 篇语料 841 片段（2026-09-15 标定，语料补 FAQ 后复标）：
+      #     标准问法 vec 0.665~0.973 / 口语化泛问 0.418~0.838
+      #     纯域外 0.335~0.356 / 像政务但未收录 0.501~0.739
+      #     关键词 域外最高 42.856 / 域内最低 21.85（靠向量分放行）
+      #     -> VECTOR_MIN_SCORE=0.45：卡在纯域外(0.356)与口语化泛问(0.47+)之间，
+      #        泛问放行后交给 VAGUE_VECTOR_MAX 走候选引导，不在门口直接拒答
+      #     -> KEYWORD_MIN_SCORE=44.3（域外最高 42.856；补 FAQ 后域外关键词分涨了 7.6，35.6 已拦不住）
+      #   tongyi-embedding-vision-flash(768 维) / 12 篇语料 580 片段（旧）：
+      #     标准 0.83~0.93 / 口语化 0.71~0.91 / 域外 0.58~0.72 -> 0.73 / 0.78
+      #   -> FUSED_MIN_SCORE 取 0.62（仅"术语强命中"时作为第二条件）
+      #   -> VAGUE_VECTOR_MAX=0.50：命中但低于它（或问题里没有业务实体词）
+      #      说明问得太概括，走候选引导而不是硬答某一个事项
+      VECTOR_MIN_SCORE: ${VECTOR_MIN_SCORE:-0.45}
+      KEYWORD_MIN_SCORE: ${KEYWORD_MIN_SCORE:-44.3}
+      FUSED_MIN_SCORE: ${FUSED_MIN_SCORE:-0.62}
+      VAGUE_VECTOR_MAX: ${VAGUE_VECTOR_MAX:-0.50}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.22}
+      TOP_K: ${TOP_K:-4}
+
+      # 首次部署后置执行导入（见 README），不要在启动时自动跑：
+      # 841 个片段的 embedding 要跑约 7 分钟，而 lifespan 里的导入会**阻塞 uvicorn 起不来**，
+      # 期间 healthcheck 会连续失败把容器标成 unhealthy。
+      AUTO_INGEST_ON_STARTUP: ${AUTO_INGEST_ON_STARTUP:-false}
+
+      # 真实语料（32 篇广东政务指南 → 841 片段），已纳入仓库，以只读方式挂载。
+      # 镜像里另外还有 6 篇 2KB 示例文档在 /app/data/docs，供离线开发/测试用。
+      DOCS_DIR: ${DOCS_DIR:-/app/data/corpus}
+      CORS_ORIGINS: "*"
+      TZ: Asia/Shanghai
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_data:/app/data
+      - ./backend/data/corpus:/app/data/corpus:ro
+      # 工作台上传的语料要落到宿主机可见、可备份的位置。
+      # 只放在 backend_data 卷里的话，一次 `docker compose down -v` 就全没了，
+      # 而用户会误以为它和内置语料一样"在仓库里"。
+      - ./backend/data/uploads:/app/data/uploads
+    extra_hosts:
+      # Linux 上让容器能解析 host.docker.internal（Docker Desktop 自带）
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: gov-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  etcd_data:
+  minio_data:
+  milvus_data:
+  backend_data:

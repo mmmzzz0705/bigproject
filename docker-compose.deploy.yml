@@ -1,0 +1,17 @@
+# 服务器部署覆盖文件 —— 只在 CD 里和 docker-compose.yml 叠加使用：
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
+#
+# 为什么单独拆一份：
+#   docker-compose.yml 里 backend / frontend 只有 build:，服务器每次都从源码构建
+#   要 10 分钟以上，还得把整个仓库和语料放到服务器上。这里改成直接拉 GHCR 已构建的镜像，
+#   服务器只需要两个 compose 文件 + 一个 .env。
+#
+# 注意：postgres / etcd / minio / milvus 本来就是官方镜像，无需覆盖。
+# 镜像地址由 CD 通过环境变量注入（BACKEND_IMAGE / FRONTEND_IMAGE），
+# 用了 :? 语法 —— 忘传会直接报错，不会静默拉到错的镜像。
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?未设置 BACKEND_IMAGE，例如 ghcr.io/owner/repo/backend:latest}
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?未设置 FRONTEND_IMAGE，例如 ghcr.io/owner/repo/frontend:latest}

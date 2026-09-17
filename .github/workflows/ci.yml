@@ -1,0 +1,187 @@
+name: CI
+
+# 政明白（GovRAG）持续集成：静态检查 → 单元测试 → 前端构建 → 镜像构建 → 全栈冒烟
+#
+# 设计取舍：
+# · 后端测试不依赖 PostgreSQL / Milvus：DB_HOST 留空时应用自动降级到 SQLite + 内存向量库，
+#   postgres/milvus 相关的 integration 用例会自行 skip（见 tests/test_api_contract.py）。
+#   换来的是 CI 跑完只要 3~5 分钟，且不会因为外部服务抖动而误报红灯。
+# · env_sync 类测试会读 backend/.env 与根目录 .env，这两个文件含密钥、不入库，
+#   CI 里用 .example 现场生成（这正是 test_env_sync 要钉死的一致性）。
+# · 全栈冒烟只在 push 到默认分支时跑：Milvus + etcd + MinIO 起来要 3~5 分钟，
+#   PR 阶段没必要每次都付这个成本。
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-test:
+    name: 后端测试 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 = 容器镜像版本（backend/Dockerfile: python:3.11-slim）
+        # 3.12 = 本机虚拟环境版本，两边都要绿
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: 生成 CI 用 .env
+        run: |
+          cp backend/.env.example backend/.env
+          cp .env.docker.example .env
+          echo "已从 .example 生成 backend/.env 与 .env（CI 不持有真实密钥）"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: 质量门禁（ruff + pytest）
+        # 复用仓库里已有的 scripts/quality_gate.py，本地与 CI 同一套命令，
+        # 不会出现"本机是好的、CI 红了"。门禁含 ruff --select F,E9（未定义名 / 语法错误）
+        # 与 pytest；integration 用例缺 PG/Milvus 时会自行 skip，无需 -m 过滤。
+        run: |
+          pip install ruff
+          python scripts/quality_gate.py
+
+      - name: 配置自检（离线）
+        working-directory: backend
+        continue-on-error: true
+        run: python scripts/check_env.py --skip-llm
+
+  frontend-build:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        # 用 npm ci：package-lock.json 与 package.json 不一致时直接失败，
+        # 而不是像 npm install 那样悄悄改 lock 文件
+        run: npm ci
+
+      - name: 构建产物
+        working-directory: frontend
+        run: npm run build
+
+      - name: 上传 dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  docker-build:
+    name: 镜像构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [backend-test, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验编排文件
+        run: |
+          cp .env.docker.example .env
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.deploy.yml config -q
+          echo "docker-compose.yml 语法与变量插值正常"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建后端镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: govrag-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: 构建前端镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          tags: govrag-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  smoke:
+    name: 全栈冒烟
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [docker-build]
+    # 只在默认分支的 push 上跑：起 Milvus + etcd + MinIO 太慢，PR 阶段不划算
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 生成部署用 .env
+        run: |
+          cp .env.docker.example .env
+          cp backend/.env.example backend/.env
+          # 冒烟阶段不联网调大模型：用 hash embedding + 抽取式兜底，
+          # 只验证"服务能起来、依赖连得上、接口返回 200"
+          echo "EMBEDDING_PROVIDER=hash" >> .env
+          echo "LLM_PROVIDER=extractive" >> .env
+
+      - name: 启动全栈
+        run: docker compose up -d --build --wait --wait-timeout 480
+
+      - name: 健康检查
+        run: |
+          set -e
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/api/health -o /tmp/health.json; then
+              echo "健康检查通过："
+              cat /tmp/health.json
+              # 断言依赖真的连上了：只验 200 的话，向量库降级成内存库也会"通过"
+              jq -e '.status == "ok" and .vector_store == "milvus" and .database == "PostgreSQL"' /tmp/health.json \
+                > /dev/null || { echo "::error::依赖未就绪（Milvus/PostgreSQL 降级了）"; exit 1; }
+              echo "依赖断言通过：PostgreSQL + Milvus 均已就绪"
+              exit 0
+            fi
+            echo "第 $i 次探活失败，5s 后重试"
+            sleep 5
+          done
+          echo "::error::健康检查超时"
+          exit 1
+
+      - name: 失败时输出日志
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --tail=200
+
+      - name: 清理
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,84 @@
+# 项目：政明白（GovRAG）—— 政务智能问答与办事引导系统
+# ============================================================
+#  复用宿主机已有的 PostgreSQL / Milvus，只编排 后端 + 前端
+#
+#  适用场景：本机已经跑着数据库和向量库（比如容器 bigpg / milvus-standalone），
+#           不想在 Docker 里再起一套，只想把应用本身容器化。
+#
+#  用法：
+#    cp .env.docker.example .env      # 至少填 DASHSCOPE_API_KEY
+#    docker-compose -f docker-compose.host.yml up -d --build
+#    docker-compose -f docker-compose.host.yml down
+#
+#  注意：Linux 宿主机需要 Docker 20.10+ 才支持 host-gateway；
+#        若解析不到，把下面的 host.docker.internal 换成宿主机在 docker0 上的 IP。
+#
+#  ⚠️ 已知问题（2026-09-14 实测）：若宿主机的 Milvus 是「内嵌 etcd + 本地存储」
+#     的 standalone（例如 milvusdb/milvus:v3.0.0 挂在 Windows 目录上），本文件会踩两个坑：
+#       1. 重启即崩：内嵌 etcd 选主竞态，streamingnode 抢跑 Txn → `panic: etcdserver:
+#          leader changed`，容器以 134 退出；需再 start 一次才起得来。
+#       2. 集合无法从磁盘重载：段文件按 `<localStorage.path>/json_stats/...` 落盘，
+#          服务端却按 `<root>/files/json_stats/...` 读取 → `invalid local path` →
+#          集合永久卡在 Loading(33%)，检索全部 503。每次重启 Milvus 都得重新 ingest。
+#      → 需要稳定环境时请改用 `docker-compose.yml`（v2.4.13 + 独立 etcd + MinIO +
+#        命名卷 + depends_on: service_healthy），实测整套 down/up 后知识库完好。
+# ============================================================
+services:
+  backend:
+    build: ./backend
+    container_name: gov-backend
+    environment:
+      DB_TYPE: postgresql
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5433}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-123456}
+      DB_NAME: ${POSTGRES_DB:-gov_qa}
+
+      VECTOR_STORE: milvus
+      VECTOR_DIM: ${VECTOR_DIM:-1024}
+      MILVUS_HOST: ${MILVUS_HOST:-host.docker.internal}
+      MILVUS_PORT: ${MILVUS_PORT:-19530}
+      MILVUS_COLLECTION: gov_docs
+
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-dashscope}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_EMBED_MODEL: ${DASHSCOPE_EMBED_MODEL:-qwen3.7-text-embedding-flash}
+
+      LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
+      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-deepseek-v4.1-flash}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-300}
+      LLM_ENABLE_THINKING: ${LLM_ENABLE_THINKING:-true}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+      LLM_THINKING_BUDGET: ${LLM_THINKING_BUDGET:-0}
+
+      # 与 qwen3.7-text-embedding-flash(1024 维) 配套；换模型后必须重新标定
+      VECTOR_MIN_SCORE: ${VECTOR_MIN_SCORE:-0.45}
+      KEYWORD_MIN_SCORE: ${KEYWORD_MIN_SCORE:-44.3}
+      FUSED_MIN_SCORE: ${FUSED_MIN_SCORE:-0.62}
+      VAGUE_VECTOR_MAX: ${VAGUE_VECTOR_MAX:-0.50}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.22}
+      TOP_K: ${TOP_K:-4}
+
+      PIPELINE: ${PIPELINE:-native}
+      # 语料目录（容器内路径）。必须和下面的 volumes 挂载点一致，
+      # 否则 `python scripts/ingest.py --dir /app/data/corpus` 会因为目录不存在而导入 0 篇。
+      DOCS_DIR: ${DOCS_DIR:-/app/data/corpus}
+      AUTO_INGEST_ON_STARTUP: ${AUTO_INGEST_ON_STARTUP:-false}
+      CORS_ORIGINS: "*"
+      TZ: Asia/Shanghai
+    ports:
+      - "8000:8000"
+    volumes:
+      # 只读挂载语料，容器内可直接跑导入脚本；宿主机改语料无需重建镜像
+      - ./backend/data/corpus:/app/data/corpus:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build: ./frontend
+    container_name: gov-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend

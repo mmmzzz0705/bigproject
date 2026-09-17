@@ -1,0 +1,18 @@
+# 统一按 LF 入库：CI/CD 跑在 Linux 上，CRLF 会炸两类东西 ——
+#   1) .sh 脚本带 \r → `/bin/sh^M: bad interpreter`
+#   2) .env 值尾部混进 \r → API Key 变 117 位 → DashScope 401（本项目真实踩过）
+# 这里用 eol=lf 让检出也统一 LF，本机开发同样受益。
+* text=auto eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

@@ -12,7 +12,8 @@ import { useCorpus } from '../composables/useCorpus'
 const {
   docs, total, totalChunks, vectorStore, degraded,
   loading, busy, progress, notice, online,
-  load, uploadFile, addText, removeDoc, reingest, clearNotice, accept
+  previewId, chunks, chunksLoading,
+  load, uploadFile, addText, removeDoc, reingest, clearNotice, togglePreview, accept
 } = useCorpus()
 
 const tab = ref('file')
@@ -75,6 +76,15 @@ async function submitText() {
 async function doRemove(doc) {
   confirmId.value = ''
   await removeDoc(doc)
+}
+
+const pvOpen = ref([])
+
+function togglePv(i) {
+  const s = new Set(pvOpen.value)
+  if (s.has(i)) s.delete(i)
+  else s.add(i)
+  pvOpen.value = [...s]
 }
 
 function fmtTime(t) {
@@ -233,33 +243,57 @@ function originLabel(d) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="d in filtered" :key="d.docId" :class="{ off: !d.inIndex }">
-                <td>
-                  <div class="d-name" :title="d.source">{{ d.docName }}</div>
-                  <div class="d-src">{{ d.source }}</div>
-                </td>
-                <td class="c">
-                  <span class="tag" :class="{
-                    'tag-brand': d.origin === 'uploaded' && d.inIndex,
-                    'tag-warn': !d.inIndex
-                  }">{{ originLabel(d) }}</span>
-                </td>
-                <td class="c">{{ d.chunks }}</td>
-                <td class="c time">{{ fmtTime(d.uploadTime) }}</td>
-                <td class="r">
-                  <div v-if="confirmId === d.docId" class="confirm">
-                    <span class="c-txt">确认移出？</span>
-                    <button class="btn danger" :disabled="busy" @click="doRemove(d)">确认</button>
-                    <button class="btn btn-ghost" :disabled="busy" @click="confirmId = ''">取消</button>
-                  </div>
-                  <div v-else class="ops">
-                    <button v-if="d.canReingest" class="btn btn-ghost" :disabled="busy"
-                      @click="reingest(d)">重新导入</button>
-                    <button v-if="d.inIndex" class="btn btn-ghost del" :disabled="busy"
-                      @click="confirmId = d.docId">移出知识库</button>
-                  </div>
-                </td>
-              </tr>
+              <template v-for="d in filtered" :key="d.docId">
+                <tr :class="{ off: !d.inIndex, open: previewId === d.docId }">
+                  <td>
+                    <div class="d-name" :title="d.source">{{ d.docName }}</div>
+                    <div class="d-src">{{ d.source }}</div>
+                  </td>
+                  <td class="c">
+                    <span class="tag" :class="{
+                      'tag-brand': d.origin === 'uploaded' && d.inIndex,
+                      'tag-warn': !d.inIndex
+                    }">{{ originLabel(d) }}</span>
+                  </td>
+                  <td class="c">{{ d.chunks }}</td>
+                  <td class="c time">{{ fmtTime(d.uploadTime) }}</td>
+                  <td class="r">
+                    <div v-if="confirmId === d.docId" class="confirm">
+                      <span class="c-txt">确认移出？</span>
+                      <button class="btn danger" :disabled="busy" @click="doRemove(d)">确认</button>
+                      <button class="btn btn-ghost" :disabled="busy" @click="confirmId = ''">取消</button>
+                    </div>
+                    <div v-else class="ops">
+                      <button v-if="d.inIndex" class="btn btn-ghost" :disabled="busy"
+                        @click="togglePreview(d)">
+                        {{ previewId === d.docId ? '收起片段' : '看切分' }}
+                      </button>
+                      <button v-if="d.canReingest" class="btn btn-ghost" :disabled="busy"
+                        @click="reingest(d)">重新导入</button>
+                      <button v-if="d.inIndex" class="btn btn-ghost del" :disabled="busy"
+                        @click="confirmId = d.docId">移出知识库</button>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr v-if="previewId === d.docId" class="pv-row">
+                  <td colspan="5">
+                    <div v-if="chunksLoading" class="pv-empty">加载中…</div>
+                    <div v-else-if="!chunks.length" class="pv-empty">没有读到片段</div>
+                    <div v-else class="pv-list">
+                      <div v-for="c in chunks" :key="c.index" class="pv-item">
+                        <div class="pv-head">
+                          <span class="pv-idx">#{{ c.index }}</span>
+                          <span class="pv-sec">{{ c.section || '（无章节名）' }}</span>
+                          <span class="pv-chars">{{ c.chars }} 字</span>
+                        </div>
+                        <div class="pv-text" :class="{ clamp: !pvOpen.includes(c.index) }"
+                          @click="togglePv(c.index)">{{ c.text }}</div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
 
@@ -386,6 +420,32 @@ function originLabel(d) {
 .del:hover { background: #fdecec; }
 
 .empty { padding: 26px 0; text-align: center; font-size: 13px; color: var(--text-3); }
+
+/* ---- 切分预览 ---- */
+.tbl tr.open { background: var(--brand-50); }
+.pv-row td { background: var(--side-2); padding: 0 8px 12px; }
+.pv-empty { padding: 14px 4px; font-size: 12px; color: var(--text-3); }
+.pv-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 4px 2px; }
+.pv-item {
+  background: #fff; border: 1px solid var(--line);
+  border-radius: var(--radius-s); padding: 8px 10px;
+}
+.pv-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.pv-idx {
+  font-size: 11px; font-weight: 700; color: var(--brand);
+  background: var(--brand-50); border-radius: 5px; padding: 1px 6px;
+}
+.pv-sec { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.pv-chars { margin-left: auto; font-size: 11px; color: var(--text-3); }
+.pv-text {
+  font-size: 12.5px; line-height: 1.7; color: var(--text-2);
+  white-space: pre-wrap; word-break: break-word; cursor: pointer;
+}
+.pv-text.clamp {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pv-text:hover { color: var(--text); }
 .foot-tip {
   margin: 14px 0 0; font-size: 11.5px; color: var(--text-3); line-height: 1.75;
   border-top: 1px solid var(--line-2); padding: 10px 0 0 18px;

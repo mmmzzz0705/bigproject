@@ -99,6 +99,23 @@ export async function addCorpusText(title, content) {
   return data || {}
 }
 
+/** 6.5 切分预览：GET /api/corpus/{doc_id}/chunks */
+export async function fetchCorpusChunks(docId, limit = 50) {
+  const { data } = await http.get(`/api/corpus/${encodeURIComponent(docId)}/chunks`, {
+    params: { limit },
+    headers: corpusHeaders()
+  })
+  return {
+    docName: data?.doc_name || '',
+    chunks: (data?.chunks ?? []).map((c) => ({
+      index: c.index ?? 0,
+      section: c.section || '',
+      chars: c.chars ?? 0,
+      text: c.text || ''
+    }))
+  }
+}
+
 /** 7. 删除语料：DELETE /api/corpus/{doc_id} */
 export async function deleteCorpusDoc(docId) {
   const { data } = await http.delete(

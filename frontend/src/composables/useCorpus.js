@@ -21,6 +21,9 @@ export function useCorpus() {
   const progress = ref(0)        // 文件上传进度（0~100）
   const notice = ref(null)
   const online = ref(true)
+  const previewId = ref('')      // 当前展开切分预览的语料
+  const chunks = ref([])
+  const chunksLoading = ref(false)
 
   function msgOf(err, fallback) {
     return err?.response?.data?.detail || err?.message || fallback
@@ -108,6 +111,30 @@ export function useCorpus() {
     }
   }
 
+  async function loadChunks(doc, limit = 50) {
+    previewId.value = doc.docId
+    chunks.value = []
+    chunksLoading.value = true
+    try {
+      const r = await api.fetchCorpusChunks(doc.docId, limit)
+      chunks.value = r.chunks
+    } catch (e) {
+      chunks.value = []
+      setNotice('err', msgOf(e, '读取片段失败'))
+    } finally {
+      chunksLoading.value = false
+    }
+  }
+
+  function togglePreview(doc) {
+    if (previewId.value === doc.docId) {
+      previewId.value = ''
+      chunks.value = []
+      return
+    }
+    loadChunks(doc)
+  }
+
   async function removeDoc(doc) {
     busy.value = true
     clearNotice()
@@ -115,6 +142,7 @@ export function useCorpus() {
       const r = await api.deleteCorpusDoc(doc.docId)
       const extra = r.recoverable ? '（源文件保留，可随时重新导入）' : ''
       setNotice('ok', `已移出知识库：${r.removed_chunks ?? 0} 个片段${extra}`)
+      if (previewId.value === doc.docId) { previewId.value = ''; chunks.value = [] }
       await load()
       return true
     } catch (e) {
@@ -144,7 +172,9 @@ export function useCorpus() {
   return {
     docs, total, totalChunks, vectorStore, degraded,
     loading, busy, progress, notice, online,
+    previewId, chunks, chunksLoading,
     load, uploadFile, addText, removeDoc, reingest, clearNotice,
+    loadChunks, togglePreview,
     accept: ACCEPT
   }
 }

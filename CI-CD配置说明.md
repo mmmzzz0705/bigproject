@@ -41,17 +41,49 @@ main / tag ─► CD ──► build-and-push → ghcr.io
    `database=PostgreSQL` —— 只验 HTTP 200 的话，向量库降级成内存库也会「通过」。
    `AUTO_INGEST_ON_STARTUP=false`，不重灌（灌一次约 6 分钟，会阻塞 uvicorn 起不来）。
 
-## 三、首次启用（本机只需做一次）
+## 三、首次启用
+
+### 1. 本机已完成的部分
 
 ```bash
-git init                       # 当前仓库还不是 git 仓库
-git add . && git commit -m "chore: 接入 GitHub Actions CI/CD"
-git branch -M main
-git remote add origin git@github.com:<owner>/<repo>.git
+git init -b main          ✅ 已执行
+git add -A                ✅ 已执行（148 个文件，已确认 .env / .venv / node_modules 均未入库）
+git commit                ✅ 已执行（4b77524）
+git remote add origin …   ⬜ 等你建好 GitHub 仓库后再执行
+git push -u origin main   ⬜ 同上
+```
+
+顺带补了两个文件：
+
+- `.gitattributes` —— 统一 LF。本项目踩过两次 CRLF 的坑：`.sh` 带 `\r` 直接
+  `bad interpreter`；`.env` 值尾部混进 `\r` 会让 API Key 多一位 → DashScope 401。
+- `.gitignore` 追加 `frontend/vite.config.js.timestamp-*.mjs`（Vite 临时文件）。
+
+### 2. 你需要在 GitHub 网页上做的（唯一一次）
+
+1. 打开 <https://github.com/new>
+2. Repository name 随便填（如 `govrag`）
+3. Visibility：选 **Private**（GHCR 镜像继承仓库可见性；语料与配置模板虽不含密钥，私密更省心）
+4. **不要勾选** Add a README / .gitignore / License —— 必须是个**空仓库**，否则 push 会被拒
+5. 点 Create repository
+
+创建完成后，页面会显示仓库地址，复制它（形如 `https://github.com/<你的用户名>/govrag.git`）。
+
+### 3. 回到本机执行两条命令
+
+```bash
+cd /d/group6
+git remote add origin https://github.com/<你的用户名>/govrag.git
 git push -u origin main
 ```
 
+> 本机装了 Git Credential Manager（`credential.helper=manager`），首次 push 会弹出
+> GitHub 登录窗口，用浏览器授权即可，**不需要自己生成 Token 或 SSH key**。
+> 想用 SSH 也行：把地址换成 `git@github.com:<用户名>/govrag.git`，前提是本机
+> `~/.ssh` 里已有密钥并已添加到 GitHub（当前本机 `~/.ssh` 为空，HTTPS 更省事）。
+
 推送后 Actions 自动触发。GHCR 推送用的是内置 `GITHUB_TOKEN`，**无需额外配置**。
+第一次 CI 大约 8~12 分钟（依赖安装 + 两个镜像构建 + 全栈冒烟），之后有缓存会快很多。
 
 ## 四、部署配置（可选，配了才会部署）
 

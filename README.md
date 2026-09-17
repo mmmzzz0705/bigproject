@@ -1,5 +1,8 @@
 # 政明白（GovRAG）· 政务智能问答与办事引导系统
 
+[![CI](https://github.com/mmmzzz0705/govrag/actions/workflows/ci.yml/badge.svg)](https://github.com/mmmzzz0705/govrag/actions/workflows/ci.yml)
+[![CD](https://github.com/mmmzzz0705/govrag/actions/workflows/cd.yml/badge.svg)](https://github.com/mmmzzz0705/govrag/actions/workflows/cd.yml)
+
 > **政明白** —— 让群众把办事流程「整明白」：有据可答、无据拒答、全程可溯源。
 > 英文代号 **GovRAG**（Government Retrieval-Augmented Generation），容器沿用 `gov-` 前缀。
 

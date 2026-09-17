@@ -42,7 +42,8 @@
 
 - 入口：侧栏顶部「智能问答 / 工作台」切换；工作台页 = 统计卡 + 上传/粘贴 + 语料表格。
 - 接口：`GET /api/corpus`、`POST /api/corpus/upload`、`POST /api/corpus/text`、
-  `DELETE /api/corpus/{doc_id}`、`POST /api/corpus/{doc_id}/reingest`。
+  `DELETE /api/corpus/{doc_id}`、`POST /api/corpus/{doc_id}/reingest`、
+  `GET /api/corpus/{doc_id}/chunks?limit=`（切分预览，看每篇被切成什么，调 CHUNK_SIZE 用）。
 - 目录约定：上传语料落 `backend/data/uploads`（**可写**）；内置语料 `backend/data/corpus`
   在 compose 里是 **`:ro` 挂载**，删不掉也不该删。origin 按"文件当前在哪个目录"实时判定，
   不入库（免得给 PG 和 SQLite 各写一遍迁移）。

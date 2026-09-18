@@ -280,10 +280,20 @@ docker-compose exec -T backend \
 | ----------- | ----------------- | ----------------------------------------------------- |
 | **启动政明白**   | `docker-up.bat`   | 起整套 → 等 `/api/health` 就绪 → 自动打开浏览器                     |
 | **打开政明白**   | `open-page.bat`   | 先探测服务，在跑才打开 `http://127.0.0.1:8080`；没跑则提示先启动            |
-| **停止政明白**   | `docker-down.bat` | 停止并删除容器；命名卷保留，数据库与向量库不丢                               |
+| **停止政明白**   | `docker-down.bat` | 按序停机：backend+frontend → milvus → 其余；命名卷保留，数据不丢         |
 
 `docker-up.bat` 的执行顺序：检测 Docker 引擎 → 定位 compose 命令 → `up -d`
 → 轮询 `/api/health`（最多 180s）→ 就绪后打印健康状态并自动打开浏览器。
+
+`docker-down.bat` 的执行顺序（**顺序是有意的**）：
+
+```bat
+docker-compose stop backend frontend   REM 1. 后端先停，此时 Milvus 还活着，连接能干净断开
+docker-compose stop milvus             REM 2. 再停向量库
+docker-compose down                    REM 3. 剩余 postgres / etcd / minio + 网络
+```
+
+先停后端是为了避免它连不上 Milvus 后刷一屏 `vector store unreachable` 报错。
 
 > - 「打开政明白」的意义：服务已经在跑时不必再走一遍 `up`，也不会像直接放个网址那样
 >   在服务没起时落到"连接被拒绝"的死页 —— 它先 `curl` 探测 `/api/health` 再决定。

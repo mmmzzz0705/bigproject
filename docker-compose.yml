@@ -31,6 +31,8 @@ services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.5
     container_name: gov-milvus-etcd
+    # 给足时间让 WAL 落盘，避免元数据与 Milvus/MinIO 状态脱节
+    stop_grace_period: 30s
     environment:
       ETCD_AUTO_COMPACTION_MODE: revision
       ETCD_AUTO_COMPACTION_RETENTION: "1000"
@@ -50,6 +52,7 @@ services:
     # 必须改用 Quay 源。版本号与 Milvus 官方 compose 保持一致。
     image: quay.io/minio/minio:RELEASE.2023-03-20T20-16-18Z
     container_name: gov-milvus-minio
+    stop_grace_period: 30s
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -70,6 +73,10 @@ services:
   milvus:
     image: milvusdb/milvus:v2.4.13
     container_name: gov-milvus
+    # Milvus 的 drop_collection 是「打标记 + 后台 GC 异步清理」，不是同步删除。
+    # Docker 默认只给 10s SIGTERM 就 SIGKILL，GC 来不及跑完 → etcd/MinIO 残留同名
+    # 僵尸集合，越积越多会让集合名解析失败（2026-09-18 全库显示「已移出」的事故）。
+    stop_grace_period: 60s
     command: ["milvus", "run", "standalone"]
     security_opt:
       - seccomp:unconfined

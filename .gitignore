@@ -60,3 +60,6 @@ logs/
 
 # 第三方工具在项目根留下的临时目录（NVIDIA 驱动日志等）
 NVIDIA Corporation/
+
+# 数据库备份快照：含会话历史与用户提问内容，属运行时数据，不入库
+.workbuddy-ai/backup/

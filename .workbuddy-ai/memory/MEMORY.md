@@ -22,6 +22,9 @@
   Windows 绑定挂载）必踩：重启 `panic: etcdserver: leader changed`、段文件路径差一层
   `files/` → 永久卡 Loading(33%)、检索全 503。宿主 `bigpg:5433` 也不用。
 - 端口：前端 8080 / 后端 8000 / PG 5432 / Milvus 19531 / MinIO 9001。
+- **停服别图快**：compose 已配 `stop_grace_period`（milvus 60s / etcd·minio 30s），
+  `docker-compose down` 会等满。别 `docker restart gov-milvus`，那还是 10s SIGKILL。
+  顺序上先停 backend 再停 milvus 栈最稳。
 - 改代码 → 加 `--build <service>`；改 `.env` → 必须 `--force-recreate`；
   换语料或换 Embedding 模型才重灌：`docker exec gov-backend python scripts/ingest.py --dir /app/data/corpus --clear`。
 - 启动 15~30s 就绪。验：`curl http://127.0.0.1:8080/api/health` → `doc_count > 0`
@@ -131,11 +134,17 @@
   false → 后端新建空集合 → `AUTO_INGEST_ON_STARTUP=false` **不自动重灌** → 空库。
   证据：MinIO 里残留旧 collectionID 的 insert_log/delta_log，Milvus 日志报
   `collection not found[collection=<旧ID>]`。
-- 修复只有一条：重灌。
-  `docker exec -w /app gov-backend python scripts/ingest.py --dir /app/data/corpus --clear`
-- 排查三步：① `/api/corpus` 看 total_chunks / in_index（**别信 health 的 doc_count**）；
+- 急救：重灌。但**治本已做**（2026-09-18 15:36），见下条。
+- **⚠️ 别用 `docker-compose down -v`**：会连 `postgres_data` 一起删，doc_meta + 会话历史全没。
+- **治本（僵尸清零）**：停服 → 只删 `group6_milvus_data group6_etcd_data group6_minio_data`
+  三卷 → `up -d` → 重灌**不加 `--clear`**（集合已空，加 --clear 会 drop+create 再造僵尸）。
+  操作前 `pg_dump` 备份。compose 已加 `stop_grace_period`（milvus 60s / etcd·minio 30s）。
+- 排查四步：① `/api/corpus` 看 total_chunks / in_index（**别信 health 的 doc_count**）；
   ② 后端日志 grep `DELETE /api/corpus` 为空 = 排除人工删除；
-  ③ MilvusClient 按 doc_id 聚合看真实剩几个 doc。
+  ③ MilvusClient 按 doc_id 聚合看真实剩几个 doc；
+  ④ `docker exec gov-milvus-etcd etcdctl get --prefix --keys-only \
+     by-dev/meta/root-coord/database/collection-info/1/` → **同名集合出现多个 ID 就是僵尸**，
+  再按 `by-dev/meta/datacoord-meta/s/<ID>` 分组数 segment，最大的那个是当前有效的。
 - MinIO 侧时间线还原：`docker exec gov-milvus-minio ls -laR /minio_data/a-bucket/files/delta_log`
   （删除记录）+ `.../insert_log`（写入记录）。**该镜像里 `find` 不可靠**（返回 0 文件），
   必须 `ls -laR`；挂载点是 `/minio_data`，不是 `/data`。

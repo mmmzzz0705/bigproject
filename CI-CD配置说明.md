@@ -141,7 +141,40 @@ docker compose exec backend python scripts/ingest.py --dir /app/data/corpus --cl
 | 部署后答「知识库暂无…」 | 向量库空或 DashScope 401 | `docker compose logs gov-backend \| grep 大模型调用失败`；401 先查 key 是否被 CRLF 污染 |
 | 上传 >1MB 报 413 | Nginx 网关拦截 | `nginx.conf` 已设 `client_max_body_size 20m` |
 
-## 六、镜像标签规则
+## 六、日常更新（改完代码后怎么同步）
+
+### 一键（推荐）
+
+```bat
+scripts\push.bat "feat: 一句话说明改了什么"
+```
+
+内部依次执行：质量门禁 → `git add -A` → `git commit` → `git push`。
+门禁没过会**直接中止**，不会把坏代码提交上去。想跳过门禁：
+
+```bat
+scripts\push.bat nogate "docs: 只改文档"
+```
+
+### 手动四条
+
+```bash
+python scripts/quality_gate.py     # 门禁（可跳过）
+git add -A
+git commit -m "说明"
+git push
+```
+
+### 要点
+
+- **`push` 是追加，不是覆盖。** 远端已有的提交一个都不会动，只补上你本地多出来的。
+  只有 `git push --force` 才会覆盖 —— 会丢别人的提交，别用。
+- **GitHub 不会自动同步。** 本地 commit 之后必须 push，远端才有。
+- **每次 push 到 `main` 会自动跑一次 CI**，Actions 页面能看到结果。
+- 提交信息里写中文没问题，脚本已 `chcp 65001`。
+- 若 push 被拒（`rejected`），说明远端有新提交，先 `git pull --rebase` 再 push。
+
+## 七、镜像标签规则
 
 由 `docker/metadata-action` 生成：
 

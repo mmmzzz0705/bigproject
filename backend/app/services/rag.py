@@ -197,8 +197,12 @@ class RAGService:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._init()
+                    # 必须先初始化完再发布：_init() 里的 get_vector_store()/build_llm()
+                    # 都是耗时操作，若提前把实例挂到 cls._instance，并发的第二个线程
+                    # 会在外层检查处拿到未初始化完的半成品（访问 svc.llm 直接 AttributeError）。
+                    inst = super().__new__(cls)
+                    inst._init()
+                    cls._instance = inst  # 初始化失败时保持 None，下次调用可重试
         return cls._instance
 
     def _init(self) -> None:

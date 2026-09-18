@@ -57,3 +57,6 @@ Thumbs.db
 # ---- 日志 ----
 *.log
 logs/
+
+# 第三方工具在项目根留下的临时目录（NVIDIA 驱动日志等）
+NVIDIA Corporation/

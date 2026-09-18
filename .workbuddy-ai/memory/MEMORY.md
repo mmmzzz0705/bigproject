@@ -8,7 +8,11 @@
   另有 `可行性报告.md`、`学术论文_政明白GovRAG.md`、`工作台功能与质量说明.md`。
 - Git：`https://github.com/mmmzzz0705/bigproject`。本机有全局 URL 重写
   （`ghfast.top` 镜像），`git remote -v` 显示 ghfast 前缀是正常的。
-  push 需 GCM 交互授权，非交互 shell 会一直等到超时（exit 124）——必须由主人自己 push。
+  push 需 GCM 交互授权，非交互 shell 会一直等到超时（exit 124）——必须由主人自己 push
+  （首次已完成，凭据已缓存，之后 `git push` 不再弹窗）。
+- **日常同步一条命令**：`scripts\push.bat "提交说明"`（门禁 → add → commit → push，
+  门禁不过直接中止；首参 `nogate` 可跳过门禁）。脚本内容保持 ASCII，别写中文进去。
+- push 是**追加**不是覆盖，只有 `--force` 才覆盖。GitHub 不会自动同步本地改动。
 
 ## 部署（2026-09-14 起）
 

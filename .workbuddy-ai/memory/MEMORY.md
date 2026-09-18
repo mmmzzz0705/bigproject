@@ -1,5 +1,13 @@
 # MEMORY.md — 政明白 GovRAG 项目长期约定
 
+## Git 远端（2026-09-18）
+
+- 仓库：`https://github.com/mmmzzz0705/bigproject`（README 徽章已指向它）。
+- 本机有**全局 URL 重写**：`url.https://ghfast.top/https://github.com/.insteadof https://github.com/`
+  —— 所以 `git remote -v` 永远显示 ghfast.top 前缀，这是正常的镜像加速，不是配错。
+- push 需要 GCM 交互授权（弹窗/浏览器），非交互 shell 里会一直等到超时（exit 124）。
+  必须由主人在自己的终端里执行 `git push -u origin main` 完成登录。
+
 ## CI/CD（2026-09-17 起）
 
 - 工作流：`.github/workflows/ci.yml`（backend-test / frontend-build / docker-build / smoke）、
